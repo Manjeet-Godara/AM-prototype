@@ -535,3 +535,178 @@ def get_system_tests(request, system_id):
         "environment": system.environment,
         "tests": response_data
     }, status=200)
+
+@require_GET
+def get_test_runs(request, test_id):
+
+    # 1. Check if Test exists
+    test = Test.objects.filter(id=test_id).first()
+
+    if not test:
+        return JsonResponse({
+            "status": "not_found",
+            "message": "Test not found"
+        }, status=404)
+
+    # 2. Get all runs, newest first
+    runs = TestRun.objects.filter(
+        test=test
+    ).prefetch_related("events").order_by("-created_at")
+
+    response_data = []
+
+    for run in runs:
+
+        # 3. Get received sequence numbers
+        received_sequences = sorted(
+            run.events.values_list(
+                "sequence_number",
+                flat=True
+            )
+        )
+
+        # 4. Check completeness (all six events received)
+        is_complete = all(
+            seq in received_sequences
+            for seq in range(1, 7)
+        )
+
+        # 5. Calculate derived outcome
+        outcome = get_test_run_outcome(run)
+
+        # 6. Find started time (sequence number 2)
+        started_event = run.events.filter(
+            sequence_number=2
+        ).first()
+
+        started_time = (
+            started_event.occurred_at
+            if started_event else None
+        )
+
+        # 7. Prepare response
+        response_data.append({
+            "id": run.id,
+            "test_run_id": run.test_run_id,
+            "outcome": outcome,
+            "started_time": started_time,
+            "received_sequences": received_sequences,
+            "is_complete": is_complete
+        })
+
+    return JsonResponse({
+        "status": "success",
+        "test_id": test.test_id,
+        "runs": response_data
+    }, status=200)
+
+from django.http import JsonResponse
+from django.views.decorators.http import require_GET
+
+from .models import TestRun, RunEvent
+
+
+@require_GET
+def get_run_details(request, run_id):
+
+    # 1. Find TestRun
+    run = TestRun.objects.filter(
+        id=run_id
+    ).select_related(
+        "test",
+        "test__system",
+        "test__registered_by"
+    ).first()
+
+    if not run:
+        return JsonResponse({
+            "status": "not_found",
+            "message": "TestRun not found"
+        }, status=404)
+
+    # 2. Get associated Test and System
+    test = run.test
+    system = test.system
+
+    # 3. Get all events for this run
+    events = {
+        event.sequence_number: event
+        for event in run.events.all()
+    }
+
+    # 4. Define the six stages
+    stage_names = {
+        1: "test.queued",
+        2: "test.started",
+        3: "test.outcome",
+        4: "cleanup.started",
+        5: "cleanup.completed",
+        6: "test.completed"
+    }
+
+    stages = []
+
+    for sequence_number in range(1, 7):
+
+        event = events.get(sequence_number)
+
+        stages.append({
+            "sequence_number": sequence_number,
+            "stage": stage_names[sequence_number],
+            "event_type": event.event_type if event else None,
+            "status": "received" if event else "not received",
+            "occurred_at": event.occurred_at if event else None,
+            "received_at": event.received_at if event else None
+        })
+
+    # 5. Calculate derived outcome
+    outcome = get_test_run_outcome(run)
+
+    # 6. Extract sequence 3 data
+    outcome_event = events.get(3)
+
+    event_data = outcome_event.data if outcome_event else {}
+
+    sequence_3_data = {
+        "summary": event_data.get("summary"),
+        "expected": event_data.get("expected"),
+        "actual": event_data.get("actual"),
+        "suggested_fix": event_data.get("suggested_fix")
+    }
+
+    # 7. Check completeness
+    is_complete = all(
+        sequence_number in events
+        for sequence_number in range(1, 7)
+    )
+
+    # 8. Prepare response
+    response_data = {
+        "id": run.id,
+        "test_run_id": run.test_run_id,
+        "outcome": outcome,
+        "is_complete": is_complete,
+
+        "test": {
+            "id": test.id,
+            "test_id": test.test_id,
+            "test_name": test.test_name,
+            "service_tested": test.service_tested,
+            "test_type": test.test_type
+        },
+
+        "system": {
+            "id": system.id,
+            "system_slug": system.system_slug,
+            "environment": system.environment
+        },
+
+        "stages": stages,
+
+        "sequence_3_data": sequence_3_data
+    }
+
+    return JsonResponse({
+        "status": "success",
+        "run": response_data
+    }, status=200)

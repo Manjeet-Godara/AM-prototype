@@ -129,3 +129,4 @@ class RunEvent(models.Model):
 
     def __str__(self):
         return f"{self.run.test_run_id} - {self.sequence_number}"
+
