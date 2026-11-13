@@ -358,3 +358,60 @@ def receive_event(request):
         "test_run_id": test_run.test_run_id,
         "sequence_number": event.sequence_number
     }, status=201)
+
+from django.http import JsonResponse
+from django.views.decorators.http import require_GET
+
+from .models import System, TestRun, RunEvent
+
+@csrf_exempt
+@require_GET
+def get_systems(request):
+
+    systems = System.objects.all().order_by("id")
+
+    response_data = []
+
+    for system in systems:
+
+        # Get all agent IDs belonging to this system
+        agent_ids = list(
+            system.agents.values_list("agent_id", flat=True)
+        )
+
+        # Count registered tests
+        test_count = system.tests.count()
+
+        # Find the latest TestRun across all tests of this system
+        latest_run = TestRun.objects.filter(
+            test__system=system
+        ).order_by("-created_at").first()
+
+        latest_outcome = None
+
+        if latest_run:
+
+            # Find the outcome event of the latest run
+            outcome_event = RunEvent.objects.filter(
+                run=latest_run,
+                sequence_number=3
+            ).first()
+
+            if outcome_event:
+                latest_outcome = outcome_event.event_type
+
+        # Prepare system response
+        response_data.append({
+            "id": system.id,
+            "system_slug": system.system_slug,
+            "environment": system.environment,
+            "agent_ids": agent_ids,
+            "test_count": test_count,
+            "last_seen_at": system.last_seen_at,
+            "latest_run_outcome": latest_outcome
+        })
+
+    return JsonResponse({
+        "status": "success",
+        "systems": response_data
+    }, status=200)
