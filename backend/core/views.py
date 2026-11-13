@@ -415,3 +415,123 @@ def get_systems(request):
         "status": "success",
         "systems": response_data
     }, status=200)
+
+def get_test_run_outcome(test_run_id):
+
+    # Check if sequence number 3 exists for this TestRun
+    event = RunEvent.objects.filter(
+        run__test_run_id=test_run_id,
+        sequence_number=3
+    ).first()
+
+    if not event:
+        return "no result"
+
+    # Determine test outcome
+    if event.event_type == "test.passed":
+        return "test passed"
+
+    elif event.event_type == "test.failed":
+        return "test failed"
+
+    elif event.event_type == "test.errored":
+        return "test errored"
+
+    return "no result"
+
+from django.http import JsonResponse
+from django.views.decorators.http import require_GET
+
+from .models import System, Test, TestRun, RunEvent
+
+
+@require_GET
+def get_system_tests(request, system_id):
+
+    # 1. Check if System exists
+    system = System.objects.filter(id=system_id).first()
+
+    if not system:
+        return JsonResponse({
+            "status": "not_found",
+            "message": "System not found"
+        }, status=404)
+
+    # 2. Get all tests belonging to this System
+    tests = Test.objects.filter(
+        system=system
+    ).select_related("registered_by")
+
+    response_data = []
+
+    for test in tests:
+
+        # 3. Get all runs for this Test
+        runs = TestRun.objects.filter(
+            test=test
+        ).prefetch_related("events").order_by("-created_at")
+
+        total_runs = 0
+        failed_runs = 0
+        errored_runs = 0
+
+        latest_run_data = None
+
+        for run in runs:
+
+            total_runs += 1
+
+            # 4. Compute derived outcome
+            outcome = get_test_run_outcome(run)
+
+            if outcome == "test failed":
+                failed_runs += 1
+
+            elif outcome == "test errored":
+                errored_runs += 1
+
+            # 5. Determine whether all six events have arrived
+            received_sequences = set(
+                run.events.values_list(
+                    "sequence_number",
+                    flat=True
+                )
+            )
+
+            is_complete = all(
+                seq in received_sequences
+                for seq in range(1, 7)
+            )
+
+            # 6. First run is the latest because of ordering
+            if latest_run_data is None:
+                latest_run_data = {
+                    "id": run.id,
+                    "run_id": run.test_run_id,
+                    "outcome": outcome,
+                    "time": run.created_at,
+                    "is_complete": is_complete
+                }
+
+        # 7. Prepare Test response
+        response_data.append({
+            "id": test.id,
+            "test_id": test.test_id,
+            "test_name": test.test_name,
+            "service_tested": test.service_tested,
+            "test_type": test.test_type,
+            "test_description": test.test_description,
+            "registered_by": test.registered_by.agent_id,
+            "total_runs": total_runs,
+            "failed_runs": failed_runs,
+            "errored_runs": errored_runs,
+            "latest_run": latest_run_data
+        })
+
+    return JsonResponse({
+        "status": "success",
+        "system_id": system.id,
+        "system_slug": system.system_slug,
+        "environment": system.environment,
+        "tests": response_data
+    }, status=200)

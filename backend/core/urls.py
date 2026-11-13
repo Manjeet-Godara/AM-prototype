@@ -6,4 +6,5 @@ urlpatterns = [
     path('tests/register/', views.register_test, name='tests_register'),
     path('events/receive/', views.receive_event, name='receive_event'),
     path('systems/', views.get_systems, name='get_systems'),
+    path('systems/<int:system_id>/tests/', views.get_system_tests, name='get_system_tests'),
 ]
